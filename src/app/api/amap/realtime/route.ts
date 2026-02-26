@@ -55,55 +55,100 @@ export async function POST(request: NextRequest) {
      }
 
      if (busKey && city && station) {
-          const lolimiUrl = new URL("https://api.lolimi.cn/api/gongjiaoche");
-          lolimiUrl.searchParams.set("city", city);
-          lolimiUrl.searchParams.set("line", station); // 传站点名
-          // lolimiUrl.searchParams.set("key", busKey); // URL参数鉴权 (可选)
+          // 修改为用户提供的正确接口地址: https://api.lolimi.cn/API/che/api
+          const lolimiUrl = new URL("https://api.lolimi.cn/API/che/api");
           
-          const lRes = await fetch(lolimiUrl.toString(), {
-              headers: {
-                  'Authorization': `Bearer ${busKey}` // 使用 Bearer Token 鉴权
-              }
-          });
-          const lData = await lRes.json();
+          // 严格按照文档设置参数
           
-          if (lData.code === 200 && lData.data && Array.isArray(lData.data)) {
-              // ... (现有逻辑)
-              // 转换数据格式为前端可用
-              const realtimeInfo = lData.data.map((item: any) => {
-                  // item: { lines: "49路", reachtime: "...", surplus: "35站", ... }
-                  // 解析 surplus: "35站" -> 35
-                  let dist = 0;
-                  if (item.surplus) {
-                      const match = item.surplus.match(/(\d+)/);
-                      if (match) dist = parseInt(match[1]);
-                      else if (item.surplus.includes("即将")) dist = 0;
+          // city: 城市名称 (移除 "市" 后缀，例如 "福州市" -> "福州"，很多公交接口不识别带市的名称)
+          const normalizedCity = city.endsWith('市') ? city.slice(0, -1) : city;
+          lolimiUrl.searchParams.set("city", normalizedCity);
+          
+          // line: 站点名称 (注意：文档说line参数是站点名称)
+          lolimiUrl.searchParams.set("line", station); 
+          
+          // key: 控制台key
+          lolimiUrl.searchParams.set("key", busKey); 
+          
+          // type: 可选json/text默认text (显式设置为 json)
+          lolimiUrl.searchParams.set("type", "json"); 
+          
+          // 打印请求参数以便调试
+          console.log(`Requesting Lolimi API: city=${normalizedCity}, line=${station}`);
+
+          try {
+              const lRes = await fetch(lolimiUrl.toString(), {
+                  headers: {
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                      'Accept': 'application/json'
                   }
-                  
-                  // 解析 reachtime 计算分钟数 (简单估算或直接显示)
-                  // item.travelTime: "42分" -> 42
-                  let time = 0;
-                  if (item.travelTime) {
-                       const match = item.travelTime.match(/(\d+)/);
-                       if (match) time = parseInt(match[1]);
-                  }
-                  
-                  return {
-                      line_name: item.lines,
-                      arrival_time: time,
-                      station_distance: dist,
-                      status: 1,
-                      desc: item.surplus // 保存原始描述
-                  };
               });
               
-              return NextResponse.json({
-                 success: true,
-                 data: {
-                     station_name: station,
-                     lines: realtimeInfo
-                 }
-              });
+              if (!lRes.ok) {
+                  // 如果是 404，可能是站点不存在，我们记录一下但不抛出严重错误，让流程继续到高德降级
+                  console.warn(`Lolimi API returned ${lRes.status}: Station not found or API error`);
+              } else {
+                  // 尝试获取文本并手动解析，因为有时候API可能返回不规范
+                  const text = await lRes.text();
+                  let lData;
+                  try {
+                      lData = JSON.parse(text);
+                  } catch (e) {
+                      // 如果返回的不是JSON，通常是错误消息，如"获取数据失败"
+                      console.warn("Lolimi API returned non-JSON message:", text.substring(0, 100));
+                      // 这里不抛出异常，而是让它自然失败，进入后续的高德降级逻辑
+                  }
+                  
+                  if (lData) {
+                      // 处理非 200 状态码的业务逻辑错误
+                      if (lData.code !== 200) {
+                          console.warn(`Lolimi API Error: ${lData.code} - ${lData.msg || 'Unknown Error'}`);
+                          // 如果是 429 (Too Many Requests) 或 401 (Invalid Key)，这些是关键错误，记录下来
+                      } else if (lData.data && Array.isArray(lData.data)) {
+                          // 成功获取数据
+                          // 转换数据格式为前端可用
+                          const realtimeInfo = lData.data.map((item: any) => {
+                              // item: { lines: "49路", reachtime: "...", surplus: "35站", ... }
+                              
+                              // 解析 surplus: "35站" -> 35
+                              let dist = 0;
+                              if (item.surplus) {
+                                  if (item.surplus.includes("即将")) {
+                                      dist = 0;
+                                  } else {
+                                      const match = item.surplus.match(/(\d+)/);
+                                      if (match) dist = parseInt(match[1]);
+                                  }
+                              }
+                              
+                              // 解析 travelTime: "42分" -> 42
+                              let time = 0;
+                              if (item.travelTime) {
+                                   const match = item.travelTime.match(/(\d+)/);
+                                   if (match) time = parseInt(match[1]);
+                              }
+                              
+                              return {
+                                  line_name: item.lines,
+                                  arrival_time: time,
+                                  station_distance: dist,
+                                  status: 1,
+                                  desc: item.surplus // 保存原始描述
+                              };
+                          });
+                          
+                          return NextResponse.json({
+                             success: true,
+                             data: {
+                                 station_name: station,
+                                 lines: realtimeInfo
+                             }
+                          });
+                      }
+                  }
+              }
+          } catch (e) {
+              console.error("Lolimi API error:", e);
           }
      }
 

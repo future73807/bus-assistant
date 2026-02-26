@@ -8,6 +8,10 @@ interface Settings {
   amapKey?: string;
   apihzId?: string;
   apihzKey?: string;
+  busKey?: string;
+  xfyunAppId?: string;
+  xfyunApiSecret?: string;
+  xfyunApiKey?: string;
   [key: string]: string | undefined;
 }
 
@@ -33,9 +37,17 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { amapKey, apihzId, apihzKey } = body;
+    const { amapKey, apihzId, apihzKey, busKey, xfyunAppId, xfyunApiSecret, xfyunApiKey } = body;
 
-    const settings: Settings = { amapKey, apihzId, apihzKey };
+    const settings: Settings = { 
+      amapKey, 
+      apihzId, 
+      apihzKey, 
+      busKey,
+      xfyunAppId,
+      xfyunApiSecret,
+      xfyunApiKey
+    };
     
     await fs.writeFile(SETTINGS_FILE, JSON.stringify(settings, null, 2));
 
