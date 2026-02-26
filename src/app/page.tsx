@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import Image from 'next/image'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, Navigation, MapPin, Volume2, RotateCcw, Settings as SettingsIcon, X, Bus, Footprints, Clock, ChevronRight } from 'lucide-react'
+import { Mic, Navigation, MapPin, Volume2, RotateCcw, Settings as SettingsIcon, X, Bus, Footprints, Clock, ChevronRight, ChevronUp, ChevronDown, ArrowRight } from 'lucide-react'
 import { Toaster } from 'sonner'
 
 // 类型定义
@@ -72,6 +72,7 @@ export default function Home() {
   const [city, setCity] = useState<string>('北京')
   const [currentLocation, setCurrentLocation] = useState<{ lng: number; lat: number } | null>(null)
   const [isAutoListen, setIsAutoListen] = useState(false)
+  const [isInputExpanded, setIsInputExpanded] = useState(true)
   
   // 实时公交信息 (Map: routeIndex -> realtimeData)
   const [realtimeInfos, setRealtimeInfos] = useState<Record<number, any>>({})
@@ -348,6 +349,7 @@ export default function Home() {
         setRealtimeInfos({}) // 清除旧的实时信息
         setSelectedRoute(0)
         setAppState('showing_routes')
+        setIsInputExpanded(false) // 找到路线后自动收起
         setMessage('')
         
         // 自动触发完整语音播报
@@ -711,14 +713,38 @@ export default function Home() {
                     let matchedLine = null;
 
                     if (realtimeData && realtimeData.lines) {
+                        // 1. 尝试精确匹配 (包含关系)
                         matchedLine = realtimeData.lines.find((l: any) => 
                             lineName.includes(l.line_name) || l.line_name.includes(lineName.split('(')[0])
                         );
+
+                        // 2. 如果没匹配到，尝试模糊匹配 (提取数字或核心标识)
+                        if (!matchedLine) {
+                            const getCoreName = (name: string) => {
+                                const match = name.match(/([a-zA-Z0-9]+)/);
+                                return match ? match[0] : name.replace(/\(.*\)/, '').replace('路', '').trim();
+                            };
+                            const targetCore = getCoreName(lineName);
+                            
+                            matchedLine = realtimeData.lines.find((l: any) => {
+                                const sourceCore = getCoreName(l.line_name);
+                                return sourceCore === targetCore;
+                            });
+                        }
                     }
 
                     if (matchedLine) {
                          newInfos[i] = matchedLine;
                     } else {
+                        // 如果没有匹配到线路，但这是一个公交路线，我们仍然显示一个占位信息
+                        // 这样用户知道我们尝试过获取，而不是什么都没有
+                         newInfos[i] = { 
+                             arrival_time: '-', 
+                             station_distance: '-',
+                             line_name: lineName,
+                             desc: '暂无实时数据'
+                         };
+
                         // 模拟数据 (Demo模式或无数据时)
                          if (isDemo || !settingsRef.current.amapKey) {
                              newInfos[i] = { 
@@ -829,6 +855,7 @@ export default function Home() {
     setEndInputValue('')
     setIsEditingStart(false)
     setIsEditingEnd(false)
+    setIsInputExpanded(true)
     setMessage('请点击麦克风，说出您的出发地点')
     await speakText('已重置，请说出您的出发地点')
   }
@@ -923,38 +950,34 @@ export default function Home() {
           )}
         </AnimatePresence>
 
-        {/* Status Message & Announcement */}
-        <div className="text-center mb-10 mt-4 relative min-h-[3rem]">
-          <AnimatePresence mode="wait">
-            {appState === 'announcing' ? (
-              <motion.div
-                key="announcement"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="flex flex-col items-center gap-2"
-              >
-                <div className="flex items-center gap-2 text-green-600 bg-green-50 px-4 py-1.5 rounded-full">
-                  <Volume2 size={18} className="animate-pulse" />
-                  <span className="text-sm font-bold uppercase tracking-wider">正在播报</span>
+        {/* Status Message */}
+        <AnimatePresence mode="wait">
+            {appState !== 'announcing' && routes.length === 0 && (
+                <div className="text-center mb-10 mt-4 relative min-h-[3rem]">
+                  <motion.h2 
+                    key="message"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="text-4xl font-bold text-gray-800 leading-relaxed"
+                  >
+                    {message === '请点击麦克风，说出您的出发地点' ? (
+                      <>
+                        请点击麦克风，<br />说出您的出发地点
+                      </>
+                    ) : message === '请点击麦克风，说出您的目的地' ? (
+                      <>
+                        请点击麦克风，<br />说出您的目的地
+                      </>
+                    ) : message === '找到多个位置，请点击选择' ? (
+                      <>
+                        找到多个位置，<br />请点击选择
+                      </>
+                    ) : message}
+                  </motion.h2>
                 </div>
-                <h2 className="text-2xl font-bold text-gray-900 leading-snug line-clamp-2 px-4">
-                  {currentAnnouncement}
-                </h2>
-              </motion.div>
-            ) : (
-              <motion.h2 
-                key="message"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="text-3xl font-bold text-gray-800 leading-relaxed"
-              >
-                {message}
-              </motion.h2>
             )}
-          </AnimatePresence>
-        </div>
+        </AnimatePresence>
 
         {/* Journey Card */}
         <AnimatePresence mode="wait">
@@ -962,83 +985,114 @@ export default function Home() {
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
-            className="bg-white rounded-[2rem] shadow-sm border border-gray-100 p-8 mb-8 relative overflow-hidden"
+            className={`bg-white rounded-[2rem] shadow-sm border border-gray-100 mb-8 relative overflow-hidden transition-all duration-300 ${isInputExpanded ? 'p-8' : 'p-4'}`}
           >
-            <div className="absolute top-0 left-0 w-1.5 h-full bg-blue-500/10" />
+            <div className={`absolute top-0 left-0 w-1.5 h-full bg-blue-500/10 transition-opacity ${isInputExpanded ? 'opacity-100' : 'opacity-0'}`} />
             
-            <div className="space-y-8 relative">
-              {/* Start Point */}
-              <div 
-                className="flex items-start gap-6 group cursor-pointer" 
-                onClick={() => {
-                  setIsEditingStart(true)
-                  setAppState('listening_start')
-                }}
-              >
-                <div className="mt-1 w-12 h-12 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0 border border-green-200 shadow-sm">
-                  <span className="font-bold text-lg">起</span>
+            {/* Toggle Button */}
+            {routes.length > 0 && (
+                <div 
+                    className="absolute top-2 right-2 z-10 p-2 text-gray-400 hover:text-gray-600 cursor-pointer"
+                    onClick={() => setIsInputExpanded(!isInputExpanded)}
+                >
+                    {isInputExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
                 </div>
-                <div className="flex-1 min-w-0 pt-1">
-                  <p className="text-sm text-gray-400 mb-2">出发地</p>
-                  {isEditingStart ? (
-                    <input
-                      autoFocus
-                      type="text"
-                      value={startInputValue}
-                      onChange={(e) => setStartInputValue(e.target.value)}
-                      onKeyDown={(e) => handleKeyDown(e, 'start')}
-                      onBlur={() => {
-                        if (startInputValue.trim()) searchLocation(startInputValue, 'start')
-                        setIsEditingStart(false)
-                      }}
-                      className="w-full text-2xl font-bold border-b-2 border-blue-500 outline-none bg-transparent"
-                      placeholder="输入起点..."
-                    />
-                  ) : (
-                    <p className={`font-bold text-2xl truncate ${!startPoint ? 'text-gray-300' : 'text-gray-900'}`}>
-                      {startPoint?.address || '点击输入起点'}
-                    </p>
-                  )}
-                </div>
-              </div>
+            )}
 
-              {/* Connector */}
-              <div className="absolute left-[22px] top-[50px] bottom-[50px] w-[3px] bg-gradient-to-b from-green-200 via-gray-200 to-red-200" />
+            <div className="relative">
+              {/* Collapsed View */}
+              {!isInputExpanded && (
+                  <div className="flex items-center justify-center gap-2 text-gray-600 font-bold text-lg" onClick={() => setIsInputExpanded(true)}>
+                       <span className="truncate max-w-[120px]">{startPoint?.name || '起点'}</span>
+                       <ArrowRight size={20} className="text-gray-400" />
+                       <span className="truncate max-w-[120px]">{endPoint?.name || '终点'}</span>
+                  </div>
+              )}
 
-              {/* End Point */}
-              <div 
-                className="flex items-start gap-6 group cursor-pointer" 
-                onClick={() => {
-                  setIsEditingEnd(true)
-                  setAppState('listening_end')
-                }}
-              >
-                <div className="mt-1 w-12 h-12 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0 border border-red-200 shadow-sm">
-                  <span className="font-bold text-lg">终</span>
-                </div>
-                <div className="flex-1 min-w-0 pt-1">
-                  <p className="text-sm text-gray-400 mb-2">目的地</p>
-                  {isEditingEnd ? (
-                    <input
-                      autoFocus
-                      type="text"
-                      value={endInputValue}
-                      onChange={(e) => setEndInputValue(e.target.value)}
-                      onKeyDown={(e) => handleKeyDown(e, 'end')}
-                      onBlur={() => {
-                        if (endInputValue.trim()) searchLocation(endInputValue, 'end')
-                        setIsEditingEnd(false)
-                      }}
-                      className="w-full text-2xl font-bold border-b-2 border-blue-500 outline-none bg-transparent"
-                      placeholder="输入终点..."
-                    />
-                  ) : (
-                    <p className={`font-bold text-2xl truncate ${!endPoint ? 'text-gray-300' : 'text-gray-900'}`}>
-                      {endPoint?.address || '点击输入终点'}
-                    </p>
-                  )}
-                </div>
-              </div>
+              {/* Expanded View */}
+              <AnimatePresence>
+              {isInputExpanded && (
+                <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="space-y-8"
+                >
+                  {/* Start Point */}
+                  <div 
+                    className="flex items-start gap-6 group cursor-pointer" 
+                    onClick={() => {
+                      setIsEditingStart(true)
+                      setAppState('listening_start')
+                    }}
+                  >
+                    <div className="mt-1 w-12 h-12 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0 border border-green-200 shadow-sm">
+                      <span className="font-bold text-lg">起</span>
+                    </div>
+                    <div className="flex-1 min-w-0 pt-1">
+                      <p className="text-sm text-gray-400 mb-2">出发地</p>
+                      {isEditingStart ? (
+                        <input
+                          autoFocus
+                          type="text"
+                          value={startInputValue}
+                          onChange={(e) => setStartInputValue(e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, 'start')}
+                          onBlur={() => {
+                            if (startInputValue.trim()) searchLocation(startInputValue, 'start')
+                            setIsEditingStart(false)
+                          }}
+                          className="w-full text-2xl font-bold border-b-2 border-blue-500 outline-none bg-transparent"
+                          placeholder="输入起点..."
+                        />
+                      ) : (
+                        <p className={`font-bold text-2xl truncate ${!startPoint ? 'text-gray-300' : 'text-gray-900'}`}>
+                          {startPoint?.address || '点击输入起点'}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Connector */}
+                  <div className="absolute left-[22px] top-[50px] bottom-[50px] w-[3px] bg-gradient-to-b from-green-200 via-gray-200 to-red-200" />
+
+                  {/* End Point */}
+                  <div 
+                    className="flex items-start gap-6 group cursor-pointer" 
+                    onClick={() => {
+                      setIsEditingEnd(true)
+                      setAppState('listening_end')
+                    }}
+                  >
+                    <div className="mt-1 w-12 h-12 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0 border border-red-200 shadow-sm">
+                      <span className="font-bold text-lg">终</span>
+                    </div>
+                    <div className="flex-1 min-w-0 pt-1">
+                      <p className="text-sm text-gray-400 mb-2">目的地</p>
+                      {isEditingEnd ? (
+                        <input
+                          autoFocus
+                          type="text"
+                          value={endInputValue}
+                          onChange={(e) => setEndInputValue(e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, 'end')}
+                          onBlur={() => {
+                            if (endInputValue.trim()) searchLocation(endInputValue, 'end')
+                            setIsEditingEnd(false)
+                          }}
+                          className="w-full text-2xl font-bold border-b-2 border-blue-500 outline-none bg-transparent"
+                          placeholder="输入终点..."
+                        />
+                      ) : (
+                        <p className={`font-bold text-2xl truncate ${!endPoint ? 'text-gray-300' : 'text-gray-900'}`}>
+                          {endPoint?.address || '点击输入终点'}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+              </AnimatePresence>
             </div>
           </motion.div>
         </AnimatePresence>
@@ -1099,24 +1153,29 @@ export default function Home() {
                   <div className="p-8">
                     <div className="flex justify-between items-start mb-8">
                       <div className="flex items-center gap-3">
-                        <span className={`px-4 py-1.5 rounded-full text-sm font-bold uppercase tracking-wider ${
-                          selectedRoute === idx ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'
-                        }`}>
-                          方案 {idx + 1}
-                        </span>
-                        {idx === 0 && (
-                          <span className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-                            selectedRoute === idx ? 'bg-green-500/20 text-green-100' : 'bg-green-100 text-green-700'
-                          }`}>
-                            推荐
-                          </span>
-                        )}
+                        {/* Left side empty to allow focus on Start/End points below */}
                       </div>
-                      <div className="text-right">
-                        <span className="text-4xl font-bold tabular-nums">
-                          {Math.floor(parseInt(route.duration) / 60)}
-                        </span>
-                        <span className={`text-base ml-1.5 ${selectedRoute === idx ? 'text-blue-100' : 'text-gray-500'}`}>分钟</span>
+                      <div className="text-right flex flex-col items-end gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+                              selectedRoute === idx ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'
+                            }`}>
+                              方案 {idx + 1}
+                            </span>
+                            {idx === 0 && (
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                selectedRoute === idx ? 'bg-green-500/20 text-green-100' : 'bg-green-100 text-green-700'
+                              }`}>
+                                推荐
+                              </span>
+                            )}
+                          </div>
+                          <div>
+                            <span className="text-4xl font-bold tabular-nums">
+                              {Math.floor(parseInt(route.duration) / 60)}
+                            </span>
+                            <span className={`text-base ml-1.5 ${selectedRoute === idx ? 'text-white' : 'text-gray-500'}`}>分钟</span>
+                          </div>
                       </div>
                     </div>
 
@@ -1142,21 +1201,31 @@ export default function Home() {
                                     {/* Main Route Info */}
                                     <div className="flex flex-col gap-4">
                                         {/* Boarding */}
-                                        <div className="flex items-start gap-3">
-                                            <div className="mt-1 w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0 font-bold text-sm">
-                                                上
-                                            </div>
-                                            <div>
-                                                <div className="flex items-center gap-2 flex-wrap">
-                                                    <span className="font-bold text-xl">{firstBus.departure_stop?.name || '起点'}</span>
-                                                    <span className={`px-2 py-0.5 rounded text-sm font-bold ${selectedRoute === idx ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'}`}>
-                                                        {firstBus.line_name?.replace(/\(.*\)/, '')}
-                                                    </span>
+                                        <div className="flex justify-between items-start">
+                                            <div className="flex items-start gap-3">
+                                                <div className="mt-1 w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0 font-bold text-sm">
+                                                    上
                                                 </div>
-                                                <p className={`text-sm mt-0.5 ${selectedRoute === idx ? 'text-blue-100' : 'text-gray-500'}`}>
-                                                    乘坐 {firstBus.via_num} 站
-                                                </p>
+                                                <div>
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        <span className="font-bold text-xl">{firstBus.departure_stop?.name || '起点'}</span>
+                                                        <span className={`px-2 py-0.5 rounded text-sm font-bold ${selectedRoute === idx ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'}`}>
+                                                            {firstBus.line_name?.replace(/\(.*\)/, '')}
+                                                        </span>
+                                                    </div>
+                                                    <p className={`text-sm mt-0.5 ${selectedRoute === idx ? 'text-white/90' : 'text-gray-500'}`}>
+                                                        乘坐 {firstBus.via_num} 站
+                                                    </p>
+                                                </div>
                                             </div>
+                                            {appState === 'announcing' && selectedRoute === idx && (
+                                                <div className="mr-2 mt-1">
+                                                    <div className="relative flex items-center justify-center w-8 h-8 rounded-full">
+                                                        <span className="absolute inset-0 rounded-full bg-green-400 opacity-40 animate-ping" />
+                                                        <Volume2 size={24} className="text-green-300 relative z-10 animate-pulse" />
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
 
                                         {/* Transfer Indicator if any */}
@@ -1170,16 +1239,19 @@ export default function Home() {
                                         )}
 
                                         {/* Alighting */}
-                                        <div className="flex items-start gap-3">
-                                            <div className="mt-1 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0 font-bold text-sm">
-                                                下
+                                        <div className="flex justify-between items-start">
+                                            <div className="flex items-start gap-3">
+                                                <div className="mt-1 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0 font-bold text-sm">
+                                                    下
+                                                </div>
+                                                <div>
+                                                    <span className="font-bold text-xl">{lastBus.arrival_stop?.name || '终点'}</span>
+                                                    <p className={`text-sm mt-0.5 ${selectedRoute === idx ? 'text-white/90' : 'text-gray-500'}`}>
+                                                        {transferCount > 0 ? '到达目的地附近' : '到达目的地'}
+                                                    </p>
+                                                </div>
                                             </div>
-                                            <div>
-                                                <span className="font-bold text-xl">{lastBus.arrival_stop?.name || '终点'}</span>
-                                                <p className={`text-sm mt-0.5 ${selectedRoute === idx ? 'text-blue-100' : 'text-gray-500'}`}>
-                                                    {transferCount > 0 ? '到达目的地附近' : '到达目的地'}
-                                                </p>
-                                            </div>
+                                            {/* Broadcasting Indicator Removed */}
                                         </div>
                                     </div>
                                 </>
@@ -1196,33 +1268,74 @@ export default function Home() {
                           exit={{ height: 0, opacity: 0, marginBottom: 0 }}
                           className="overflow-hidden"
                         >
-                          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20">
+                          <div className={`backdrop-blur-md rounded-2xl p-4 border ${
+                            selectedRoute === idx 
+                              ? 'bg-white/20 border-white/30' 
+                              : 'bg-blue-50 border-blue-100'
+                          }`}>
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-2">
-                                <div className="p-1.5 bg-white/20 rounded-lg">
+                                <div className={`p-1.5 rounded-lg ${
+                                  selectedRoute === idx ? 'bg-white/20' : 'bg-blue-100 text-blue-600'
+                                }`}>
                                   <Bus size={16} className="animate-bounce" />
                                 </div>
-                                <span className="text-sm font-bold text-blue-50">实时公交</span>
+                                <span className={`text-sm font-bold ${
+                                  selectedRoute === idx ? 'text-white' : 'text-blue-900'
+                                }`}>实时公交</span>
                               </div>
-                              <span className="text-xs text-blue-200">正在赶来</span>
+                              <span className={`text-xs ${
+                                selectedRoute === idx ? 'text-white/90' : 'text-blue-600'
+                              }`}>
+                                {realtimeInfos[idx].status === 0 ? '暂无数据' : '正在赶来'}
+                              </span>
                             </div>
-                            <div className="flex items-end gap-2">
-                              <span className="text-3xl font-bold">{realtimeInfos[idx].arrival_time}</span>
-                              <span className="text-sm text-blue-100 mb-1.5">分钟</span>
-                              <span className="text-sm text-blue-200 mb-1.5 mx-1">|</span>
-                              <span className="text-3xl font-bold">{realtimeInfos[idx].station_distance}</span>
-                              <span className="text-sm text-blue-100 mb-1.5">站</span>
-                            </div>
-                            <p className="text-xs text-blue-200 mt-2 truncate">
-                              车辆位置：{realtimeInfos[idx].line_name || '未知位置'}
-                            </p>
+                            
+                            {realtimeInfos[idx].status === 0 ? (
+                                <div className="py-2">
+                                    <p className={`text-lg font-bold ${selectedRoute === idx ? 'text-white/80' : 'text-gray-500'}`}>
+                                        {/* 如果API返回了描述，显示描述；否则，如果配置了key但没数据，显示暂无数据；如果没配key，可能是Demo模式被覆盖了 */}
+                                        {realtimeInfos[idx].desc || '暂无实时数据'}
+                                    </p>
+                                    {!settingsRef.current.amapKey && (
+                                        <p className="text-xs mt-1 text-gray-400">
+                                            (请在设置中配置API Key以获取实时数据)
+                                        </p>
+                                    )}
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="flex items-end gap-2">
+                                      <span className={`text-3xl font-bold ${
+                                        selectedRoute === idx ? 'text-white' : 'text-blue-900'
+                                      }`}>{realtimeInfos[idx].arrival_time}</span>
+                                      <span className={`text-sm mb-1.5 ${
+                                        selectedRoute === idx ? 'text-white/90' : 'text-blue-700'
+                                      }`}>分钟</span>
+                                      <span className={`text-sm mb-1.5 mx-1 ${
+                                        selectedRoute === idx ? 'text-white/60' : 'text-blue-300'
+                                      }`}>|</span>
+                                      <span className={`text-3xl font-bold ${
+                                        selectedRoute === idx ? 'text-white' : 'text-blue-900'
+                                      }`}>{realtimeInfos[idx].station_distance}</span>
+                                      <span className={`text-sm mb-1.5 ${
+                                        selectedRoute === idx ? 'text-white/90' : 'text-blue-700'
+                                      }`}>站</span>
+                                    </div>
+                                    <p className={`text-xs mt-2 truncate ${
+                                      selectedRoute === idx ? 'text-white/80' : 'text-blue-600'
+                                    }`}>
+                                      车辆位置：{realtimeInfos[idx].line_name || '未知位置'}
+                                    </p>
+                                </>
+                            )}
                           </div>
                         </motion.div>
                       )}
                     </AnimatePresence>
 
                     {/* Walking Distance Only (No Price) */}
-                    <div className="flex items-center gap-2 mb-6 opacity-80">
+                    <div className={`flex items-center gap-2 mb-6 opacity-80 ${selectedRoute === idx ? 'text-white' : 'text-gray-900'}`}>
                         <Footprints size={16} />
                         <span className="text-sm">步行 {formatDistance(route.walking_distance)}</span>
                     </div>
@@ -1231,13 +1344,13 @@ export default function Home() {
                       {route.steps?.slice(0, 3).map((step, sIdx) => (
                         <div key={sIdx} className="flex items-center gap-4 py-2 text-base">
                           <div className={`w-2 h-2 rounded-full ${selectedRoute === idx ? 'bg-blue-300' : 'bg-gray-300'}`} />
-                          <p className={`truncate ${selectedRoute === idx ? 'text-blue-50' : 'text-gray-600'}`}>
+                          <p className={`truncate ${selectedRoute === idx ? 'text-white/90' : 'text-gray-600'}`}>
                             {step.line_name ? `乘坐 ${step.line_name}` : step.instruction}
                           </p>
                         </div>
                       ))}
                       {(route.steps?.length || 0) > 3 && (
-                         <p className={`text-sm mt-3 pl-6 ${selectedRoute === idx ? 'text-blue-300' : 'text-gray-400'}`}>
+                         <p className={`text-sm mt-3 pl-6 ${selectedRoute === idx ? 'text-blue-200' : 'text-gray-400'}`}>
                            ...等 {route.steps?.length} 个步骤
                          </p>
                       )}
@@ -1283,17 +1396,7 @@ export default function Home() {
             </motion.button>
           )}
 
-          {/* Announce Button */}
-          {appState === 'showing_routes' && routes.length > 0 && (
-            <motion.button
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              onClick={() => startAnnouncement()}
-              className="w-24 h-24 bg-green-500 text-white rounded-full shadow-2xl shadow-green-200 flex items-center justify-center hover:bg-green-600 active:scale-95 transition-all"
-            >
-              <Navigation size={40} />
-            </motion.button>
-          )}
+          {/* Announce Button Removed */}
         </div>
       </div>
 
