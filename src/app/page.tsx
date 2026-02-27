@@ -300,10 +300,19 @@ export default function Home() {
   const speakTextAndWait = (text: string): Promise<void> => {
     return new Promise(async (resolve) => {
       // 增加一个取消标记，如果在等待期间 audioRef 被替换（即开始了新的播报），则立即 resolve
-      const currentAudioId = Date.now();
+      // 但实际上我们无法在 Promise 内部检测外部变量的变化，除非轮询
+      // 更好的做法是：在 playAnnouncements 循环中检查
       
       const safeResolve = () => resolve();
       const hasXfyunKey = settingsRef.current.xfyunAppId && settingsRef.current.xfyunApiSecret && settingsRef.current.xfyunApiKey;
+      const currentRouteIndex = selectedRouteRef.current;
+
+      // 检查是否已被中断（如果 appState 不再是 announcing）
+      // 增加检查：如果正在录音，也直接跳过
+      if (appStateRef.current !== 'announcing' || selectedRouteRef.current !== currentRouteIndex || isRecording) {
+          safeResolve();
+          return;
+      }
 
       if (hasXfyunKey) {
           try {
@@ -314,6 +323,12 @@ export default function Home() {
             })
             const data = await res.json()
             
+            // 再次检查状态，因为 fetch 是异步的
+            if (appStateRef.current !== 'announcing' || selectedRouteRef.current !== currentRouteIndex || isRecording) {
+                safeResolve();
+                return;
+            }
+            
             if (data.success && data.audio) {
                 // 如果在 fetch 期间已经开始了新的播报（通过检测 audioRef 是否被重置），则放弃播放
                 // 但这里 audioRef 只是一个 HTMLAudioElement，很难追踪
@@ -321,6 +336,9 @@ export default function Home() {
                 
                 const audio = new Audio(`data:audio/mp3;base64,${data.audio}`)
                 audioRef.current = audio
+                
+                // 确保之前的音频已经停止
+                // (虽然 startAnnouncement 会停止，但 playAnnouncements 内部循环也需要注意)
                 
                 audio.onended = () => {
                     audioRef.current = null;
@@ -505,13 +523,43 @@ export default function Home() {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
 
+    // 记录当前的播报ID，用于中断检查
+    const currentSessionId = Date.now();
+    
+    // 我们需要一个 ref 来存储当前的 sessionId，以便在 startAnnouncement 中更新它
+    // 由于没有全局的 sessionId ref，我们利用 announcementTimeoutRef 作为一个简单的标记
+    // 但这不够健壮。
+    
+    // 让我们依赖 appStateRef 和 selectedRouteRef
+    // 只要 selectedRoute 变了，或者 appState 变了，就停止
+    
+    const currentRouteIndex = selectedRouteRef.current;
+
     for (let i = 0; i < announcements.length; i++) {
-      // 移除 appState 检查，因为我们刚刚强制设置了
-      // if (appStateRef.current !== 'announcing') break
+      // 检查是否被中断
+      if (appStateRef.current !== 'announcing') break;
+      if (selectedRouteRef.current !== currentRouteIndex) break;
+      if (isRecording) break; // 如果正在录音，立即停止播报循环
       
       setCurrentAnnouncement(announcements[i])
       setAnnouncementIndex(i)
+      
+      // 在播放前，再次确保没有正在播放的音频
+      // 强制停止所有可能的音频源
+      if (audioRef.current) {
+          try { 
+              audioRef.current.pause(); 
+              audioRef.current.currentTime = 0;
+          } catch(e) {}
+      }
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+      
       await speakTextAndWait(announcements[i])
+      
+      // 再次检查状态，因为 await 期间可能发生了变化
+      if (appStateRef.current !== 'announcing') break;
+      if (selectedRouteRef.current !== currentRouteIndex) break;
+      if (isRecording) break; // 如果正在录音，立即停止播报循环
       
       // 每条播报之间暂停一下
       await new Promise(resolve => {
@@ -519,22 +567,13 @@ export default function Home() {
       })
     }
     
-    // 播报结束后
-    // 这里的状态检查是必要的，防止用户中途退出了
-    // 但如果只是点击另一个路线，状态应该还是 announcing，所以这里没问题
+    // ... (后续逻辑)
     
-    // 我们不需要检查 appStateRef.current === 'announcing'，因为即使切换了，也可以执行后续逻辑
-    // 关键是，如果用户点击了另一个路线，playAnnouncements 会被再次调用吗？
-    // 会的，startAnnouncement 会再次调用
-    
-    // 为了避免旧的 playAnnouncements 干扰新的，我们需要一种机制来取消旧的
-    // 可以用一个 useRef 来记录当前的播报ID？
-    // 或者简单点：每次 startAnnouncement 时，清除之前的 timeout，并且停止 TTS
-    
-    setAppState('showing_routes')
-    setCurrentAnnouncement('')
-    
-    // ... (自动开启麦克风逻辑已移除)
+    // 只有当完整播放完且没有被中断时，才恢复状态
+    if (appStateRef.current === 'announcing' && selectedRouteRef.current === currentRouteIndex) {
+        setAppState('showing_routes')
+        setCurrentAnnouncement('')
+    }
   }
 
   // 搜索路线
@@ -737,11 +776,37 @@ export default function Home() {
 
   // 开始录音 (使用 Web Speech API)
   const startRecording = async (silenceTimeout: number = 5000) => {
+    // 立即设置录音状态，提供即时反馈
+    setIsRecording(true);
+    setMessage('正在启动麦克风...');
+
+    // 强制停止所有正在播放的语音
+    if (audioRef.current) {
+        try {
+            audioRef.current.pause();
+            audioRef.current.currentTime = 0;
+        } catch (e) {}
+    }
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    
+    // 清除播报定时器
+    if (announcementTimeoutRef.current) {
+        clearTimeout(announcementTimeoutRef.current);
+        announcementTimeoutRef.current = null;
+    }
+    
+    // 如果正在播报中，强制退出播报状态
+    if (appStateRef.current === 'announcing') {
+        setAppState('showing_routes'); // 或者保持当前状态，只要停止声音就行
+        setCurrentAnnouncement('');
+    }
+
     // 检查浏览器支持
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
         alert('您的浏览器不支持语音识别，请使用 Chrome 或 Edge 浏览器。');
         setMessage('浏览器不支持语音识别');
+        setIsRecording(false);
         return;
     }
 
@@ -752,6 +817,9 @@ export default function Home() {
         recognition.maxAlternatives = 1;
 
         recognition.onstart = () => {
+            // 实际上 setIsRecording(true) 是在 onstart 回调中设置的
+            // 这会导致 UI 反应滞后于点击操作
+            // 我们应该在 startRecording 调用时就立即设置一个 loading 状态，或者乐观地设置为 true
             setIsRecording(true);
             setMessage('正在聆听...');
         };
