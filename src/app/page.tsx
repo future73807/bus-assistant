@@ -1088,15 +1088,38 @@ export default function Home() {
          announcements.push(`请注意查看站牌信息。`)
     }
 
-    // 3. 下车提醒
-    if (firstBus) {
-        announcements.push(`坐 ${firstBus.via_num} 站后，在 ${firstBus.arrival_stop?.name} 下车。`)
+    // 3. 下车提醒 (只报第一程的下车，如果后面有换乘，换乘逻辑会补充)
+    const transferSteps = steps.filter((s, i) => s.line_name && s !== firstBus); // 排除第一辆车
+    
+    if (firstBus && transferSteps.length === 0) {
+         // 如果没有换乘，直接报终点下车
+         const stationCount = parseInt(firstBus.via_num || '0');
+         const stationText = stationCount === 0 ? '1' : (stationCount + 1).toString();
+         announcements.push(`乘坐 ${stationText} 站后，在 ${firstBus.arrival_stop?.name} 下车。`)
+    } else if (firstBus) {
+         // 如果有换乘，第一程下车是为了换乘
+         const stationCount = parseInt(firstBus.via_num || '0');
+         const stationText = stationCount === 0 ? '1' : (stationCount + 1).toString();
+         announcements.push(`乘坐 ${stationText} 站后，在 ${firstBus.arrival_stop?.name} 下车换乘。`)
     }
 
     // 4. 换乘提醒 (如果有)
-    const transferSteps = steps.filter((s, i) => i > 0 && s.line_name);
+    // 之前只提醒了次数，现在需要详细提醒
     if (transferSteps.length > 0) {
-        announcements.push(`下车后，需要换乘 ${transferSteps.length} 次。`)
+        transferSteps.forEach((step, index) => {
+             // 换乘详情
+             const lineName = step.line_name?.replace(/\(.*\)/, '') || '';
+             const depStop = step.departure_stop?.name;
+             const arrStop = step.arrival_stop?.name;
+             const count = parseInt(step.via_num || '0');
+             const countText = count === 0 ? '1' : (count + 1).toString();
+             
+             announcements.push(`换乘 ${lineName}。`);
+             // 如果换乘站和上一程下车站不同（需要步行），可以提一下，但这里简化处理
+             // announcements.push(`在 ${depStop} 上车。`); // 通常下车就是上车点附近，或者同站换乘
+             
+             announcements.push(`乘坐 ${countText} 站后，在 ${arrStop} 下车。`);
+        });
     }
 
     // 5. 结束语
@@ -1672,7 +1695,10 @@ export default function Home() {
                                                         )}
                                                     </div>
                                                     <p className={`text-sm mt-0.5 ${selectedRoute === idx ? 'text-white/90' : 'text-gray-500'}`}>
-                                                        乘坐 {firstBus.via_num} 站
+                                                        乘坐 {(() => {
+                                                            const count = parseInt(firstBus.via_num || '0');
+                                                            return count === 0 ? '1' : (count + 1).toString();
+                                                        })()} 站
                                                     </p>
                                                 </div>
                                             </div>
