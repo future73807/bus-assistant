@@ -32,13 +32,26 @@ export async function POST(request: NextRequest) {
       url.searchParams.set("city", city);
     }
     // 如果没有cityd（终点城市），默认使用city（起点城市）
+    // 强制都传 cityd，以防万一
     if (cityd) {
       url.searchParams.set("cityd", cityd);
     } else if (city) {
       url.searchParams.set("cityd", city);
     }
     
-    url.searchParams.set("strategy", "0"); // 推荐策略
+    // 策略：0：推荐；1：最少换乘；2：最少步行；3：不乘地铁；4：时间最短；5：不乘地铁且最少换乘
+    // 为了获取更多方案，我们可以尝试不传 strategy，或者使用 0
+    // 但是高德 API 有时候返回很少
+    
+    // 我们这里使用 0，但如果结果少，我们尝试获取 5（不乘地铁且换乘少）来补充？
+    // 或者我们直接把 strategy 参数去掉，看是否返回更多？
+    // 文档说 strategy 默认为 0。
+    
+    url.searchParams.set("strategy", "0"); 
+    
+    // 另外，增加 extensions 参数以获取更多信息（如 via_stops）
+    url.searchParams.set("extensions", "all");
+    
     url.searchParams.set("nightflag", "0");
     url.searchParams.set("date", new Date().toISOString().split('T')[0]);
     url.searchParams.set("time", new Date().toTimeString().slice(0, 5).replace(':', ''));
@@ -46,13 +59,68 @@ export async function POST(request: NextRequest) {
     const response = await fetch(url.toString());
     const data = await response.json();
 
+    // 如果方案少于2个，尝试使用策略 5 (不乘地铁且最少换乘) 来获取更多方案
+    // 并合并结果
+    if (data.status === "1" && (!data.route || !data.route.transits || data.route.transits.length < 2)) {
+      try {
+        const retryUrl = new URL("https://restapi.amap.com/v3/direction/transit/integrated");
+        retryUrl.searchParams.set("key", key);
+        retryUrl.searchParams.set("origin", origin);
+        retryUrl.searchParams.set("destination", destination);
+        if (city) retryUrl.searchParams.set("city", city);
+        if (cityd) retryUrl.searchParams.set("cityd", cityd); else if (city) retryUrl.searchParams.set("cityd", city);
+        
+        // 使用策略 5 (不乘地铁且最少换乘) - 这通常会给出纯公交方案
+        // 或者策略 1 (最少换乘)
+        retryUrl.searchParams.set("strategy", "5"); 
+        retryUrl.searchParams.set("extensions", "all");
+        retryUrl.searchParams.set("nightflag", "0");
+        retryUrl.searchParams.set("date", new Date().toISOString().split('T')[0]);
+        retryUrl.searchParams.set("time", new Date().toTimeString().slice(0, 5).replace(':', ''));
+        
+        const retryResponse = await fetch(retryUrl.toString());
+        const retryData = await retryResponse.json();
+        
+        if (retryData.status === "1" && retryData.route?.transits?.length > 0) {
+          // 合并方案
+          // 需要去重，比较 distance 和 duration
+          const existingTransits = data.route?.transits || [];
+          const newTransits = retryData.route.transits;
+          
+          // 简单合并
+          if (!data.route) data.route = { transits: [] };
+          if (!data.route.transits) data.route.transits = [];
+          
+          // 简单的去重逻辑：检查第一段的 instruction 是否完全一样
+          newTransits.forEach((t: any) => {
+            const isDuplicate = existingTransits.some((et: any) => {
+              // 比较总距离和总时间
+              return et.distance === t.distance && et.cost?.duration === t.cost?.duration;
+            });
+            if (!isDuplicate) {
+              data.route.transits.push(t);
+            }
+          });
+        }
+      } catch (e) {
+        console.warn('Retry strategy failed', e);
+      }
+    }
+
     if (data.status !== "1") {
-      // 尝试不带city参数重试
+      console.warn('First route attempt failed:', data.info);
+      
+      // 尝试使用策略 2 (最少换乘) 重试
+      // ...
       const retryUrl = new URL("https://restapi.amap.com/v3/direction/transit/integrated");
       retryUrl.searchParams.set("key", key);
       retryUrl.searchParams.set("origin", origin);
       retryUrl.searchParams.set("destination", destination);
-      retryUrl.searchParams.set("strategy", "0");
+      if (city) retryUrl.searchParams.set("city", city);
+      if (cityd) retryUrl.searchParams.set("cityd", cityd); else if (city) retryUrl.searchParams.set("cityd", city);
+      
+      retryUrl.searchParams.set("strategy", "2"); 
+      retryUrl.searchParams.set("extensions", "all");
       retryUrl.searchParams.set("nightflag", "0");
       retryUrl.searchParams.set("date", new Date().toISOString().split('T')[0]);
       retryUrl.searchParams.set("time", new Date().toTimeString().slice(0, 5).replace(':', ''));
@@ -61,7 +129,6 @@ export async function POST(request: NextRequest) {
       const retryData = await retryResponse.json();
       
       if (retryData.status === "1" && retryData.route?.transits?.length > 0) {
-        // Transform the data structure before returning
         transformRouteData(retryData.route);
         return NextResponse.json({
           success: true,
@@ -76,12 +143,15 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
+    // 此时可能是合并后的数据
+    const finalResult = data;
+
     // Transform the data structure before returning
-    transformRouteData(data.route);
+    transformRouteData(finalResult.route);
 
     return NextResponse.json({
       success: true,
-      data: data,
+      data: finalResult,
       isDemo: false
     });
 

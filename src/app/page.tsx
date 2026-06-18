@@ -602,7 +602,7 @@ export default function Home() {
 
       if (data.success && data.data.route?.transits?.length > 0) {
         setIsDemo(data.isDemo)
-        setRoutes(data.data.route.transits.slice(0, 2)) // 只取前两个方案
+        setRoutes(data.data.route.transits.slice(0, 3)) // 只取前三个方案 (之前是2，现在改为3)
         setRealtimeInfos({}) // 清除旧的实时信息
         setSelectedRoute(0)
         setAppState('showing_routes')
